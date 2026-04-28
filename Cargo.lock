@@ -228,6 +228,8 @@ name = "cdc-core"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
@@ -240,7 +242,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "cdc-core",
+ "cdc-sink-file",
  "cdc-sink-pubsub",
+ "cdc-source-file",
  "cdc-source-pg-polling",
  "clap",
  "dotenvy",
@@ -249,6 +253,7 @@ dependencies = [
  "hex",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tokio-postgres",
  "tokio-util",

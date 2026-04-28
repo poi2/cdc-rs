@@ -10,23 +10,24 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tracing::{error, info};
 
-use cdc_core::{CdcPipeline, PipelineConfig};
+use cdc_core::{CdcPipeline, LsnEvent, PipelineConfig};
 use cdc_sink_pubsub::{PubSubSink, PubsubMessage};
 use cdc_source_pg_polling::{PgSource, PgSourceConfig};
 
 use config::Config;
 use event::OutboxEvent;
 
-fn to_pubsub_message(event: &OutboxEvent) -> PubsubMessage {
-    let mut attributes = HashMap::with_capacity(4);
-    attributes.insert("event_id".to_string(), event.event_id.to_string());
-    attributes.insert("entity_id".to_string(), event.entity_id.clone());
-    attributes.insert("event_name".to_string(), event.event_name.clone());
-    attributes.insert("occurred_at".to_string(), event.occurred_at.clone());
+fn to_pubsub_message(event: &LsnEvent<OutboxEvent>) -> PubsubMessage {
+    let mut attributes = HashMap::with_capacity(5);
+    attributes.insert("event_id".to_string(), event.event.event_id.to_string());
+    attributes.insert("entity_id".to_string(), event.event.entity_id.clone());
+    attributes.insert("event_name".to_string(), event.event.event_name.clone());
+    attributes.insert("occurred_at".to_string(), event.event.occurred_at.clone());
+    attributes.insert("__lsn".to_string(), event.lsn.to_string());
 
     PubsubMessage {
-        data: event.payload_binary.clone().into(),
-        ordering_key: event.entity_id.clone(),
+        data: event.event.payload_binary.clone().into(),
+        ordering_key: event.event.entity_id.clone(),
         attributes,
         ..Default::default()
     }

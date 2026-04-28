@@ -20,9 +20,9 @@ impl WalReader {
         }
     }
 
-    pub async fn peek_changes(&self, client: &Client) -> Result<Vec<String>, tokio_postgres::Error> {
+    pub async fn peek_changes(&self, client: &Client) -> Result<Vec<(String, String)>, tokio_postgres::Error> {
         let query = format!(
-            "SELECT data FROM pg_logical_slot_peek_changes('{}', NULL, {}{})",
+            "SELECT lsn::text, data FROM pg_logical_slot_peek_changes('{}', NULL, {}{})",
             self.slot_name, self.max_changes, self.slot_options
         );
 
@@ -34,7 +34,7 @@ impl WalReader {
 
         debug!(count = rows.len(), slot = %self.slot_name, "WAL entries found");
 
-        Ok(rows.iter().map(|row| row.get(0)).collect())
+        Ok(rows.iter().map(|row| (row.get(0), row.get(1))).collect())
     }
 
     pub async fn advance_slot(&self, client: &Client) -> Result<(), tokio_postgres::Error> {

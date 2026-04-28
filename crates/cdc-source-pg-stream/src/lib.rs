@@ -8,7 +8,7 @@ use pgwire_replication::{Lsn, PgWireError, ReplicationClient, ReplicationConfig,
 use serde::de::DeserializeOwned;
 use tracing::info;
 
-use cdc_core::Source;
+use cdc_core::{LsnEvent, Source};
 use cdc_source_pg_common as pg_common;
 use protocol::{PgOutputMessage, ProtocolError, Relation, parse_pgoutput_message, tuple_to_json};
 
@@ -39,7 +39,7 @@ pub struct PgStreamSource<E> {
     setup_client: pg_common::Client,
     repl_client: ReplicationClient,
     relations: HashMap<u32, Relation>,
-    pending_events: Vec<E>,
+    pending_events: Vec<LsnEvent<E>>,
     last_wal_end: Lsn,
     config: PgStreamSourceConfig,
 }
@@ -99,9 +99,9 @@ impl<E: DeserializeOwned + Clone + Send + Sync + 'static> PgStreamSource<E> {
 
     fn process_event(&mut self, event: ReplicationEvent) -> Result<(), PgStreamError> {
         match event {
-            ReplicationEvent::XLogData { data, wal_end, .. } => {
+            ReplicationEvent::XLogData { data, wal_start, wal_end, .. } => {
                 self.last_wal_end = self.last_wal_end.max(wal_end);
-                self.process_pgoutput(&data)?;
+                self.process_pgoutput(&data, wal_start.as_u64())?;
             }
             ReplicationEvent::KeepAlive { wal_end, .. } => {
                 self.last_wal_end = self.last_wal_end.max(wal_end);
@@ -114,7 +114,7 @@ impl<E: DeserializeOwned + Clone + Send + Sync + 'static> PgStreamSource<E> {
         Ok(())
     }
 
-    fn process_pgoutput(&mut self, data: &[u8]) -> Result<(), PgStreamError> {
+    fn process_pgoutput(&mut self, data: &[u8], lsn: u64) -> Result<(), PgStreamError> {
         let Some(msg) = parse_pgoutput_message(data)? else {
             return Ok(());
         };
@@ -128,7 +128,7 @@ impl<E: DeserializeOwned + Clone + Send + Sync + 'static> PgStreamSource<E> {
                     if self.matches_table(rel) {
                         let json = tuple_to_json(rel, &ins.tuple);
                         match serde_json::from_value::<E>(json) {
-                            Ok(event) => self.pending_events.push(event),
+                            Ok(event) => self.pending_events.push(LsnEvent { lsn, event }),
                             Err(e) => {
                                 return Err(PgStreamError::Deserialization(e));
                             }
@@ -145,10 +145,10 @@ impl<E: DeserializeOwned + Clone + Send + Sync + 'static> PgStreamSource<E> {
 
 #[async_trait]
 impl<E: DeserializeOwned + Clone + Send + Sync + 'static> Source for PgStreamSource<E> {
-    type Event = E;
+    type Event = LsnEvent<E>;
     type Error = PgStreamError;
 
-    async fn peek(&mut self) -> Result<Vec<E>, PgStreamError> {
+    async fn peek(&mut self) -> Result<Vec<LsnEvent<E>>, PgStreamError> {
         if !self.pending_events.is_empty() {
             return Ok(self.pending_events.clone());
         }

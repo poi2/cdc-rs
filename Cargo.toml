@@ -22,7 +22,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 
 [dev-dependencies]
+cdc-source-file = { path = "crates/cdc-source-file" }
+cdc-sink-file = { path = "crates/cdc-sink-file" }
 google-cloud-pubsub = "0.30"
 google-cloud-googleapis = "0.16"
 hex = "0.4"
+tempfile = "3"
 tokio-postgres = { version = "0.7", features = ["with-uuid-1"] }

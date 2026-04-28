@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 use tracing::info;
 
-use cdc_core::Source;
+use cdc_core::{LsnEvent, Source};
 use cdc_source_pg_common as pg_common;
 use decoder::WalPlugin;
 use wal_reader::WalReader;
@@ -18,6 +18,8 @@ pub enum PgPollingError {
     Common(#[from] pg_common::PgCommonError),
     #[error("failed to deserialize WAL event")]
     Deserialization(#[source] serde_json::Error),
+    #[error("invalid LSN in WAL entry: {0}")]
+    InvalidLsn(String),
 }
 
 pub struct PgSourceConfig {
@@ -67,10 +69,10 @@ impl<E: DeserializeOwned + Send + Sync + 'static> PgSource<E> {
 
 #[async_trait]
 impl<E: DeserializeOwned + Send + Sync + 'static> Source for PgSource<E> {
-    type Event = E;
+    type Event = LsnEvent<E>;
     type Error = PgPollingError;
 
-    async fn peek(&mut self) -> Result<Vec<E>, PgPollingError> {
+    async fn peek(&mut self) -> Result<Vec<LsnEvent<E>>, PgPollingError> {
         let raw_entries = self
             .wal_reader
             .peek_changes(&self.client)
@@ -78,10 +80,12 @@ impl<E: DeserializeOwned + Send + Sync + 'static> Source for PgSource<E> {
             .map_err(pg_common::PgCommonError::from)?;
         let mut events = Vec::new();
 
-        for raw in &raw_entries {
+        for (lsn_str, raw) in &raw_entries {
             if let Some(json) = self.config.plugin.decode(raw, &self.config.outbox_table) {
+                let lsn = pg_common::parse_pg_lsn(lsn_str)
+                    .map_err(|_| PgPollingError::InvalidLsn(lsn_str.clone()))?;
                 match serde_json::from_value::<E>(json) {
-                    Ok(event) => events.push(event),
+                    Ok(event) => events.push(LsnEvent { lsn, event }),
                     Err(e) => {
                         return Err(PgPollingError::Deserialization(e));
                     }

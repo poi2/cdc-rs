@@ -13,6 +13,19 @@ pub enum PgCommonError {
     Postgres(#[from] tokio_postgres::Error),
     #[error("invalid identifier `{name}`: {reason}")]
     InvalidIdentifier { name: String, reason: String },
+    #[error("invalid pg_lsn: {0}")]
+    InvalidLsn(String),
+}
+
+pub fn parse_pg_lsn(s: &str) -> Result<u64, PgCommonError> {
+    let (hi, lo) = s
+        .split_once('/')
+        .ok_or_else(|| PgCommonError::InvalidLsn(s.to_string()))?;
+    let hi = u64::from_str_radix(hi, 16)
+        .map_err(|_| PgCommonError::InvalidLsn(s.to_string()))?;
+    let lo = u64::from_str_radix(lo, 16)
+        .map_err(|_| PgCommonError::InvalidLsn(s.to_string()))?;
+    Ok((hi << 32) | lo)
 }
 
 impl PgCommonError {
@@ -289,6 +302,39 @@ mod tests {
             extract_sslmode("postgresql://u:p@host/db?sslmode=REQUIRE"),
             SslMode::Require
         ));
+    }
+
+    #[test]
+    fn test_parse_pg_lsn_basic() {
+        assert_eq!(parse_pg_lsn("0/16B3698").unwrap(), 0x16B3698);
+    }
+
+    #[test]
+    fn test_parse_pg_lsn_with_high_bits() {
+        assert_eq!(parse_pg_lsn("1/16B3698").unwrap(), 0x100000000 | 0x16B3698);
+    }
+
+    #[test]
+    fn test_parse_pg_lsn_zero() {
+        assert_eq!(parse_pg_lsn("0/0").unwrap(), 0);
+    }
+
+    #[test]
+    fn test_parse_pg_lsn_max() {
+        assert_eq!(
+            parse_pg_lsn("FFFFFFFF/FFFFFFFF").unwrap(),
+            u64::MAX
+        );
+    }
+
+    #[test]
+    fn test_parse_pg_lsn_invalid_no_slash() {
+        assert!(parse_pg_lsn("016B3698").is_err());
+    }
+
+    #[test]
+    fn test_parse_pg_lsn_invalid_hex() {
+        assert!(parse_pg_lsn("0/ZZZZ").is_err());
     }
 
     #[test]
