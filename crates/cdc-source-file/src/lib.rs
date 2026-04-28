@@ -8,6 +8,18 @@ use tracing::info;
 
 use cdc_core::Source;
 
+#[derive(Debug, thiserror::Error)]
+pub enum FileSourceError {
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error("failed to parse line {line}")]
+    Parse {
+        line: usize,
+        #[source]
+        source: serde_json::Error,
+    },
+}
+
 pub struct FileSourceConfig {
     pub path: PathBuf,
     pub batch_size: usize,
@@ -20,7 +32,7 @@ pub struct FileSource<E> {
 }
 
 impl<E: DeserializeOwned> FileSource<E> {
-    pub fn new(config: FileSourceConfig) -> anyhow::Result<Self> {
+    pub fn new(config: FileSourceConfig) -> Result<Self, FileSourceError> {
         let file = File::open(&config.path)?;
         let reader = BufReader::new(file);
         let mut events = Vec::new();
@@ -30,8 +42,10 @@ impl<E: DeserializeOwned> FileSource<E> {
             if line.trim().is_empty() {
                 continue;
             }
-            let event: E = serde_json::from_str(&line)
-                .map_err(|e| anyhow::anyhow!("Failed to parse line {}: {e}", i + 1))?;
+            let event: E = serde_json::from_str(&line).map_err(|e| FileSourceError::Parse {
+                line: i + 1,
+                source: e,
+            })?;
             events.push(event);
         }
 
@@ -48,22 +62,23 @@ impl<E: DeserializeOwned> FileSource<E> {
 #[async_trait]
 impl<E: Send + Sync + Clone + 'static> Source for FileSource<E> {
     type Event = E;
+    type Error = FileSourceError;
 
-    async fn peek(&mut self) -> anyhow::Result<Vec<E>> {
+    async fn peek(&mut self) -> Result<Vec<E>, FileSourceError> {
         let end = (self.offset + self.batch_size).min(self.events.len());
         Ok(self.events[self.offset..end].to_vec())
     }
 
-    async fn advance(&mut self) -> anyhow::Result<()> {
+    async fn advance(&mut self) -> Result<(), FileSourceError> {
         self.offset = (self.offset + self.batch_size).min(self.events.len());
         Ok(())
     }
 
-    async fn reconnect(&mut self) -> anyhow::Result<()> {
+    async fn reconnect(&mut self) -> Result<(), FileSourceError> {
         Ok(())
     }
 
-    fn is_retriable_error(&self, _err: &anyhow::Error) -> bool {
+    fn is_retriable_error(&self, _err: &FileSourceError) -> bool {
         false
     }
 }

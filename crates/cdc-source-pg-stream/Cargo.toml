@@ -6,8 +6,8 @@ edition = "2024"
 [dependencies]
 cdc-core = { path = "../cdc-core" }
 cdc-source-pg-common = { path = "../cdc-source-pg-common" }
-anyhow = "1"
 async-trait = "0.1"
+thiserror = "2"
 bytes = "1"
 hex = "0.4"
 pgwire-replication = "0.3"

@@ -9,6 +9,16 @@ use tracing::info;
 
 use cdc_core::Sink;
 
+#[derive(Debug, thiserror::Error)]
+pub enum FileSinkError {
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error("serialization error")]
+    Serialization(#[source] serde_json::Error),
+    #[error("lock poisoned")]
+    LockPoisoned,
+}
+
 pub struct FileSink<E> {
     writer: Mutex<BufWriter<File>>,
     path: PathBuf,
@@ -16,7 +26,7 @@ pub struct FileSink<E> {
 }
 
 impl<E> FileSink<E> {
-    pub fn new(path: impl AsRef<Path>) -> anyhow::Result<Self> {
+    pub fn new(path: impl AsRef<Path>) -> Result<Self, FileSinkError> {
         let path = path.as_ref().to_path_buf();
         let file = OpenOptions::new()
             .create(true)
@@ -40,19 +50,18 @@ impl<E> FileSink<E> {
 #[async_trait]
 impl<E: Serialize + Send + Sync + 'static> Sink for FileSink<E> {
     type Event = E;
+    type Error = FileSinkError;
 
-    async fn publish(&self, events: &[E]) -> anyhow::Result<()> {
+    async fn publish(&self, events: &[E]) -> Result<(), FileSinkError> {
         if events.is_empty() {
             return Ok(());
         }
 
-        let mut writer = self
-            .writer
-            .lock()
-            .map_err(|e| anyhow::anyhow!("Lock poisoned: {e}"))?;
+        let mut writer = self.writer.lock().map_err(|_| FileSinkError::LockPoisoned)?;
 
         for event in events {
-            serde_json::to_writer(&mut *writer, event)?;
+            serde_json::to_writer(&mut *writer, event)
+                .map_err(FileSinkError::Serialization)?;
             writeln!(&mut *writer)?;
         }
         writer.flush()?;

@@ -13,6 +13,18 @@ const MAX_RETRIES: u32 = 5;
 const INITIAL_BACKOFF: Duration = Duration::from_millis(100);
 const MAX_BACKOFF: Duration = Duration::from_secs(10);
 
+#[derive(Debug, thiserror::Error)]
+pub enum PubSubError {
+    #[error("failed to create Pub/Sub auth config: {0}")]
+    Auth(String),
+    #[error("failed to create Pub/Sub client: {0}")]
+    Client(String),
+    #[error("publisher already shut down")]
+    PublisherShutDown,
+    #[error("publish failed: {0}")]
+    Publish(String),
+}
+
 pub struct PubSubSink<E> {
     publisher: Option<Publisher>,
     topic_name: String,
@@ -23,19 +35,19 @@ impl<E: Send + Sync + 'static> PubSubSink<E> {
     pub async fn new(
         topic: &str,
         to_message: impl Fn(&E) -> PubsubMessage + Send + Sync + 'static,
-    ) -> anyhow::Result<Self> {
+    ) -> Result<Self, PubSubError> {
         let config = if std::env::var("PUBSUB_EMULATOR_HOST").is_ok() {
             ClientConfig::default()
         } else {
             ClientConfig::default()
                 .with_auth()
                 .await
-                .map_err(|e| anyhow::anyhow!("Failed to create Pub/Sub auth config: {}", e))?
+                .map_err(|e| PubSubError::Auth(e.to_string()))?
         };
 
         let client = Client::new(config)
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to create Pub/Sub client: {}", e))?;
+            .map_err(|e| PubSubError::Client(e.to_string()))?;
 
         let topic = client.topic(topic);
         let publisher = topic.new_publisher(None);
@@ -49,11 +61,11 @@ impl<E: Send + Sync + 'static> PubSubSink<E> {
         })
     }
 
-    async fn try_publish(&self, messages: &[PubsubMessage]) -> anyhow::Result<()> {
+    async fn try_publish(&self, messages: &[PubsubMessage]) -> Result<(), PubSubError> {
         let publisher = self
             .publisher
             .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Publisher already shut down"))?;
+            .ok_or(PubSubError::PublisherShutDown)?;
 
         let mut awaiters = Vec::with_capacity(messages.len());
 
@@ -66,7 +78,7 @@ impl<E: Send + Sync + 'static> PubSubSink<E> {
             awaiter
                 .get()
                 .await
-                .map_err(|e| anyhow::anyhow!("Pub/Sub publish failed: {:?}", e))?;
+                .map_err(|e| PubSubError::Publish(format!("{e:?}")))?;
         }
 
         Ok(())
@@ -76,8 +88,9 @@ impl<E: Send + Sync + 'static> PubSubSink<E> {
 #[async_trait]
 impl<E: Send + Sync + 'static> Sink for PubSubSink<E> {
     type Event = E;
+    type Error = PubSubError;
 
-    async fn publish(&self, events: &[E]) -> anyhow::Result<()> {
+    async fn publish(&self, events: &[E]) -> Result<(), PubSubError> {
         if events.is_empty() {
             return Ok(());
         }

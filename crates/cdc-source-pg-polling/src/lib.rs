@@ -3,7 +3,7 @@ mod wal_reader;
 
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
-use tracing::{info, warn};
+use tracing::info;
 
 use cdc_core::Source;
 use cdc_source_pg_common as pg_common;
@@ -11,6 +11,14 @@ use decoder::WalPlugin;
 use wal_reader::WalReader;
 
 pub use pg_common::connect;
+
+#[derive(Debug, thiserror::Error)]
+pub enum PgPollingError {
+    #[error(transparent)]
+    Common(#[from] pg_common::PgCommonError),
+    #[error("failed to deserialize WAL event")]
+    Deserialization(#[source] serde_json::Error),
+}
 
 pub struct PgSourceConfig {
     pub database_url: String,
@@ -29,7 +37,7 @@ pub struct PgSource<E> {
 }
 
 impl<E: DeserializeOwned + Send + Sync + 'static> PgSource<E> {
-    pub async fn new(config: PgSourceConfig) -> anyhow::Result<Self> {
+    pub async fn new(config: PgSourceConfig) -> Result<Self, PgPollingError> {
         let client = pg_common::connect(&config.database_url).await?;
         pg_common::setup_replication(
             &client,
@@ -52,7 +60,7 @@ impl<E: DeserializeOwned + Send + Sync + 'static> PgSource<E> {
         })
     }
 
-    pub async fn get_slot_lag_bytes(&self) -> anyhow::Result<i64> {
+    pub async fn get_slot_lag_bytes(&self) -> Result<i64, pg_common::PgCommonError> {
         pg_common::get_slot_lag_bytes(&self.client, &self.config.slot_name).await
     }
 }
@@ -60,9 +68,14 @@ impl<E: DeserializeOwned + Send + Sync + 'static> PgSource<E> {
 #[async_trait]
 impl<E: DeserializeOwned + Send + Sync + 'static> Source for PgSource<E> {
     type Event = E;
+    type Error = PgPollingError;
 
-    async fn peek(&mut self) -> anyhow::Result<Vec<E>> {
-        let raw_entries = self.wal_reader.peek_changes(&self.client).await?;
+    async fn peek(&mut self) -> Result<Vec<E>, PgPollingError> {
+        let raw_entries = self
+            .wal_reader
+            .peek_changes(&self.client)
+            .await
+            .map_err(pg_common::PgCommonError::from)?;
         let mut events = Vec::new();
 
         for raw in &raw_entries {
@@ -70,7 +83,7 @@ impl<E: DeserializeOwned + Send + Sync + 'static> Source for PgSource<E> {
                 match serde_json::from_value::<E>(json) {
                     Ok(event) => events.push(event),
                     Err(e) => {
-                        warn!(error = %e, data = raw, "Failed to deserialize WAL event");
+                        return Err(PgPollingError::Deserialization(e));
                     }
                 }
             }
@@ -83,18 +96,25 @@ impl<E: DeserializeOwned + Send + Sync + 'static> Source for PgSource<E> {
         Ok(events)
     }
 
-    async fn advance(&mut self) -> anyhow::Result<()> {
-        self.wal_reader.advance_slot(&self.client).await
+    async fn advance(&mut self) -> Result<(), PgPollingError> {
+        self.wal_reader
+            .advance_slot(&self.client)
+            .await
+            .map_err(pg_common::PgCommonError::from)?;
+        Ok(())
     }
 
-    async fn reconnect(&mut self) -> anyhow::Result<()> {
+    async fn reconnect(&mut self) -> Result<(), PgPollingError> {
         let client = pg_common::connect(&self.config.database_url).await?;
         self.client = client;
         info!("PostgreSQL reconnected");
         Ok(())
     }
 
-    fn is_retriable_error(&self, err: &anyhow::Error) -> bool {
-        pg_common::is_connection_error(err)
+    fn is_retriable_error(&self, err: &PgPollingError) -> bool {
+        match err {
+            PgPollingError::Common(e) => e.is_connection_error(),
+            _ => false,
+        }
     }
 }

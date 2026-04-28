@@ -3,6 +3,22 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const PG_EPOCH_OFFSET_US: i64 = 946_684_800_000_000;
 
+#[derive(Debug, thiserror::Error)]
+pub enum ProtocolError {
+    #[error("{0}")]
+    InvalidData(String),
+    #[error("invalid UTF-8 in C string")]
+    Utf8(#[from] std::string::FromUtf8Error),
+}
+
+macro_rules! ensure {
+    ($cond:expr, $($arg:tt)*) => {
+        if !$cond {
+            return Err(ProtocolError::InvalidData(format!($($arg)*)));
+        }
+    };
+}
+
 pub enum ReplicationMessage {
     XLogData(XLogData),
     PrimaryKeepalive(PrimaryKeepalive),
@@ -21,12 +37,12 @@ pub struct PrimaryKeepalive {
     pub reply_required: bool,
 }
 
-pub fn parse_replication_message(data: &[u8]) -> anyhow::Result<ReplicationMessage> {
-    anyhow::ensure!(!data.is_empty(), "Empty replication message");
+pub fn parse_replication_message(data: &[u8]) -> Result<ReplicationMessage, ProtocolError> {
+    ensure!(!data.is_empty(), "Empty replication message");
     let mut buf = data;
     match buf.get_u8() {
         b'w' => {
-            anyhow::ensure!(buf.remaining() >= 24, "XLogData too short");
+            ensure!(buf.remaining() >= 24, "XLogData too short");
             let start_lsn = buf.get_u64();
             let end_lsn = buf.get_u64();
             let timestamp = buf.get_i64();
@@ -39,7 +55,7 @@ pub fn parse_replication_message(data: &[u8]) -> anyhow::Result<ReplicationMessa
             }))
         }
         b'k' => {
-            anyhow::ensure!(buf.remaining() >= 17, "PrimaryKeepalive too short");
+            ensure!(buf.remaining() >= 17, "PrimaryKeepalive too short");
             let end_lsn = buf.get_u64();
             let timestamp = buf.get_i64();
             let reply_required = buf.get_u8() != 0;
@@ -49,7 +65,9 @@ pub fn parse_replication_message(data: &[u8]) -> anyhow::Result<ReplicationMessa
                 reply_required,
             }))
         }
-        tag => Err(anyhow::anyhow!("Unknown replication message tag: {tag:#x}")),
+        tag => Err(ProtocolError::InvalidData(format!(
+            "Unknown replication message tag: {tag:#x}"
+        ))),
     }
 }
 
@@ -103,12 +121,12 @@ pub enum TupleValue {
     Text(Vec<u8>),
 }
 
-pub fn parse_pgoutput_message(data: &[u8]) -> anyhow::Result<Option<PgOutputMessage>> {
-    anyhow::ensure!(!data.is_empty(), "Empty pgoutput message");
+pub fn parse_pgoutput_message(data: &[u8]) -> Result<Option<PgOutputMessage>, ProtocolError> {
+    ensure!(!data.is_empty(), "Empty pgoutput message");
     let mut buf = data;
     match buf.get_u8() {
         b'B' => {
-            anyhow::ensure!(buf.remaining() >= 20, "Begin too short");
+            ensure!(buf.remaining() >= 20, "Begin too short");
             let final_lsn = buf.get_u64();
             let timestamp = buf.get_i64();
             let xid = buf.get_u32();
@@ -119,7 +137,7 @@ pub fn parse_pgoutput_message(data: &[u8]) -> anyhow::Result<Option<PgOutputMess
             })))
         }
         b'C' => {
-            anyhow::ensure!(buf.remaining() >= 25, "Commit too short");
+            ensure!(buf.remaining() >= 25, "Commit too short");
             let flags = buf.get_u8();
             let commit_lsn = buf.get_u64();
             let end_lsn = buf.get_u64();
@@ -132,19 +150,19 @@ pub fn parse_pgoutput_message(data: &[u8]) -> anyhow::Result<Option<PgOutputMess
             })))
         }
         b'R' => {
-            anyhow::ensure!(buf.remaining() >= 4, "Relation too short");
+            ensure!(buf.remaining() >= 4, "Relation too short");
             let id = buf.get_u32();
             let namespace = read_cstring(&mut buf)?;
             let name = read_cstring(&mut buf)?;
-            anyhow::ensure!(buf.remaining() >= 3, "Relation columns too short");
+            ensure!(buf.remaining() >= 3, "Relation columns too short");
             let replica_identity = buf.get_u8();
             let num_columns = buf.get_i16() as usize;
             let mut columns = Vec::with_capacity(num_columns);
             for _ in 0..num_columns {
-                anyhow::ensure!(buf.remaining() >= 1, "Column too short");
+                ensure!(buf.remaining() >= 1, "Column too short");
                 let flags = buf.get_u8();
                 let col_name = read_cstring(&mut buf)?;
-                anyhow::ensure!(buf.remaining() >= 8, "Column type too short");
+                ensure!(buf.remaining() >= 8, "Column type too short");
                 let type_oid = buf.get_u32();
                 let type_modifier = buf.get_i32();
                 columns.push(Column {
@@ -163,10 +181,10 @@ pub fn parse_pgoutput_message(data: &[u8]) -> anyhow::Result<Option<PgOutputMess
             })))
         }
         b'I' => {
-            anyhow::ensure!(buf.remaining() >= 5, "Insert too short");
+            ensure!(buf.remaining() >= 5, "Insert too short");
             let relation_id = buf.get_u32();
             let tag = buf.get_u8();
-            anyhow::ensure!(tag == b'N', "Expected 'N' tag in Insert, got {tag:#x}");
+            ensure!(tag == b'N', "Expected 'N' tag in Insert, got {tag:#x}");
             let tuple = parse_tuple_data(&mut buf)?;
             Ok(Some(PgOutputMessage::Insert(Insert {
                 relation_id,
@@ -177,34 +195,38 @@ pub fn parse_pgoutput_message(data: &[u8]) -> anyhow::Result<Option<PgOutputMess
     }
 }
 
-fn read_cstring(buf: &mut &[u8]) -> anyhow::Result<String> {
+fn read_cstring(buf: &mut &[u8]) -> Result<String, ProtocolError> {
     let pos = buf
         .iter()
         .position(|&b| b == 0)
-        .ok_or_else(|| anyhow::anyhow!("Missing null terminator in C string"))?;
+        .ok_or_else(|| ProtocolError::InvalidData("Missing null terminator in C string".into()))?;
     let s = String::from_utf8(buf[..pos].to_vec())?;
     buf.advance(pos + 1);
     Ok(s)
 }
 
-fn parse_tuple_data(buf: &mut &[u8]) -> anyhow::Result<TupleData> {
-    anyhow::ensure!(buf.remaining() >= 2, "TupleData too short");
+fn parse_tuple_data(buf: &mut &[u8]) -> Result<TupleData, ProtocolError> {
+    ensure!(buf.remaining() >= 2, "TupleData too short");
     let num_columns = buf.get_i16() as usize;
     let mut values = Vec::with_capacity(num_columns);
     for _ in 0..num_columns {
-        anyhow::ensure!(buf.remaining() >= 1, "TupleValue too short");
+        ensure!(buf.remaining() >= 1, "TupleValue too short");
         match buf.get_u8() {
             b'n' => values.push(TupleValue::Null),
             b'u' => values.push(TupleValue::Unchanged),
             b't' => {
-                anyhow::ensure!(buf.remaining() >= 4, "Text value length too short");
+                ensure!(buf.remaining() >= 4, "Text value length too short");
                 let len = buf.get_i32() as usize;
-                anyhow::ensure!(buf.remaining() >= len, "Text value data too short");
+                ensure!(buf.remaining() >= len, "Text value data too short");
                 let data = buf[..len].to_vec();
                 buf.advance(len);
                 values.push(TupleValue::Text(data));
             }
-            tag => return Err(anyhow::anyhow!("Unknown tuple value tag: {tag:#x}")),
+            tag => {
+                return Err(ProtocolError::InvalidData(format!(
+                    "Unknown tuple value tag: {tag:#x}"
+                )));
+            }
         }
     }
     Ok(TupleData { values })
