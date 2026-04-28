@@ -1,0 +1,13 @@
+[package]
+name = "cdc-sink-pubsub"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cdc-core = { path = "../cdc-core" }
+anyhow = "1"
+async-trait = "0.1"
+google-cloud-googleapis = "0.16"
+google-cloud-pubsub = "0.30"
+tokio = { version = "1", features = ["time"] }
+tracing = "0.1"
