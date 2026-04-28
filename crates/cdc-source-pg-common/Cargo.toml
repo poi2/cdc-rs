@@ -1,5 +1,5 @@
 [package]
-name = "cdc-source-pg-core"
+name = "cdc-source-pg-common"
 version = "0.1.0"
 edition = "2024"
 

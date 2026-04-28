@@ -5,7 +5,7 @@ use async_trait::async_trait;
 pub use pipeline::{CdcPipeline, PipelineConfig};
 
 #[async_trait]
-pub trait Source: Send + Sync {
+pub trait Source: Send {
     type Event: Send + Sync;
     async fn peek(&mut self) -> anyhow::Result<Vec<Self::Event>>;
     async fn advance(&mut self) -> anyhow::Result<()>;

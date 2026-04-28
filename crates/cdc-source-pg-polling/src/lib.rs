@@ -6,11 +6,11 @@ use serde::de::DeserializeOwned;
 use tracing::{info, warn};
 
 use cdc_core::Source;
-use cdc_source_pg_core as pg_core;
+use cdc_source_pg_common as pg_common;
 use decoder::WalPlugin;
 use wal_reader::WalReader;
 
-pub use pg_core::connect;
+pub use pg_common::connect;
 
 pub struct PgSourceConfig {
     pub database_url: String,
@@ -22,7 +22,7 @@ pub struct PgSourceConfig {
 }
 
 pub struct PgSource<E> {
-    client: pg_core::Client,
+    client: pg_common::Client,
     wal_reader: WalReader,
     config: PgSourceConfig,
     _marker: std::marker::PhantomData<E>,
@@ -30,8 +30,8 @@ pub struct PgSource<E> {
 
 impl<E: DeserializeOwned + Send + Sync + 'static> PgSource<E> {
     pub async fn new(config: PgSourceConfig) -> anyhow::Result<Self> {
-        let client = pg_core::connect(&config.database_url).await?;
-        pg_core::setup_replication(
+        let client = pg_common::connect(&config.database_url).await?;
+        pg_common::setup_replication(
             &client,
             &config.slot_name,
             &config.publication_name,
@@ -53,7 +53,7 @@ impl<E: DeserializeOwned + Send + Sync + 'static> PgSource<E> {
     }
 
     pub async fn get_slot_lag_bytes(&self) -> anyhow::Result<i64> {
-        pg_core::get_slot_lag_bytes(&self.client, &self.config.slot_name).await
+        pg_common::get_slot_lag_bytes(&self.client, &self.config.slot_name).await
     }
 }
 
@@ -88,13 +88,13 @@ impl<E: DeserializeOwned + Send + Sync + 'static> Source for PgSource<E> {
     }
 
     async fn reconnect(&mut self) -> anyhow::Result<()> {
-        let client = pg_core::connect(&self.config.database_url).await?;
+        let client = pg_common::connect(&self.config.database_url).await?;
         self.client = client;
         info!("PostgreSQL reconnected");
         Ok(())
     }
 
     fn is_retriable_error(&self, err: &anyhow::Error) -> bool {
-        pg_core::is_connection_error(err)
+        pg_common::is_connection_error(err)
     }
 }
